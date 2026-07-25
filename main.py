@@ -245,6 +245,7 @@ def fetch_url_tool(url: str, max_redirects: int = 5):
                 }
 
             current_url = next_url
+            continue
 
         return {"action": "allow", "reason": "safe allowlisted url", "result": {"text": resp.text}}
 
