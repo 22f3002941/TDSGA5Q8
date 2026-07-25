@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 from pathlib import Path
 import socket
 import ipaddress
@@ -175,35 +175,40 @@ def url_is_safe(raw_url: str):
     return True, "safe url"
 
 
-def fetch_url_tool(url: str):
-    ok, reason = url_is_safe(url)
-    if not ok:
-        return {"action": "block", "reason": reason, "result": None}
+def fetch_url_tool(url: str, max_redirects: int = 5):
+    current_url = url
 
-    try:
-        resp = requests.get(url, timeout=10, allow_redirects=False, headers={"User-Agent": "guardrail/1.0"})
-    except Exception:
-        return {"action": "block", "reason": "request failed", "result": None}
-
-    if 300 <= resp.status_code < 400:
-        location = resp.headers.get("Location")
-        if not location:
-            return {"action": "block", "reason": "redirect without location", "result": None}
-
-        if location.startswith("/"):
-            parsed = urlparse(url)
-            location = f"{parsed.scheme}://{parsed.hostname}{location}"
-
-        ok2, reason2 = url_is_safe(location)
-        if not ok2:
-            return {"action": "block", "reason": "redirect blocked", "result": None}
+    for _ in range(max_redirects + 1):
+        # Re-validate EVERY hop -- scheme, userinfo, host allowlist, and
+        # DNS-resolved-IP safety -- not just the original request. A chain
+        # of two or more redirects (safe -> safe -> unsafe) must not slip
+        # through just because only the first hop was checked.
+        ok, reason = url_is_safe(current_url)
+        if not ok:
+            return {"action": "block", "reason": reason, "result": None}
 
         try:
-            resp = requests.get(location, timeout=10, allow_redirects=False, headers={"User-Agent": "guardrail/1.0"})
+            resp = requests.get(
+                current_url, timeout=10, allow_redirects=False,
+                headers={"User-Agent": "guardrail/1.0"},
+            )
         except Exception:
-            return {"action": "block", "reason": "redirect request failed", "result": None}
+            return {"action": "block", "reason": "request failed", "result": None}
 
-    return {"action": "allow", "reason": "safe allowlisted url", "result": {"text": resp.text}}
+        if 300 <= resp.status_code < 400:
+            location = resp.headers.get("Location")
+            if not location:
+                return {"action": "block", "reason": "redirect without location", "result": None}
+
+            # urljoin correctly resolves relative paths, protocol-relative
+            # ("//host/path"), and absolute redirect targets per RFC 3986,
+            # unlike manual string concatenation.
+            current_url = urljoin(current_url, location)
+            continue
+
+        return {"action": "allow", "reason": "safe allowlisted url", "result": {"text": resp.text}}
+
+    return {"action": "block", "reason": "too many redirects", "result": None}
 
 
 @app.post("/")
