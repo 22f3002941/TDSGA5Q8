@@ -186,13 +186,16 @@ def url_is_safe(raw_url: str):
 
     if hostname not in ALLOWED_HOSTS:
         return False, "host not allowlisted"
-    """
-    if parsed.port is not None:
-        if parsed.scheme == "http" and parsed.port != 80:
+
+    try:
+        port = parsed.port
+    except ValueError:
+        return False, "bad port"
+
+    if port is not None:
+        default_port = 80 if parsed.scheme == "http" else 443
+        if port != default_port:
             return False, "bad port"
-        if parsed.scheme == "https" and parsed.port != 443:
-            return False, "bad port"
-    """
 
     try:
         ipaddress.ip_address(hostname)
