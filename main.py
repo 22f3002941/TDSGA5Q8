@@ -3,10 +3,23 @@ from fastapi.responses import JSONResponse
 from urllib.parse import urlparse, urljoin
 from pathlib import Path
 import contextlib
+import logging
 import socket
+import sys
+import time
+import uuid
 import ipaddress
 import requests
 import urllib3.util.connection as urllib3_cn
+
+# Log to stdout (uncaptured/unbuffered) so it shows up in Render's Logs tab
+# immediately, one line per event, structured enough to grep.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("guardrail")
 
 app = FastAPI()
 
@@ -44,7 +57,10 @@ ensure_seed_files()
 
 
 @app.get("/debug")
-async def debug():
+async def debug(request: Request):
+    client_ip = request.client.host if request.client else "unknown"
+    logger.info("client=%s GET /debug", client_ip)
+
     def is_in_sandbox(path: Path) -> bool:
         try:
             path.relative_to(SANDBOX_ROOT)
@@ -328,9 +344,25 @@ def fetch_url_tool(url: str, max_redirects: int = 5):
 
 @app.post("/")
 async def guardrail(request: Request):
+    req_id = uuid.uuid4().hex[:8]
+    client_ip = request.client.host if request.client else "unknown"
+    t0 = time.monotonic()
+
+    raw_body = await request.body()
+    raw_text = raw_body.decode("utf-8", errors="replace")
+    logger.info(
+        "req=%s client=%s RAW BODY: %s",
+        req_id, client_ip, raw_text[:2000],
+    )
+
     try:
-        payload = await request.json()
-    except Exception:
+        payload = __import__("json").loads(raw_body)
+    except Exception as exc:
+        logger.warning(
+            "req=%s client=%s DECISION action=block reason='invalid request' "
+            "(json parse failed: %s)",
+            req_id, client_ip, exc,
+        )
         return JSONResponse(
             {
                 "action": "block",
@@ -338,13 +370,25 @@ async def guardrail(request: Request):
                 "result": None,
             }
         )
+
     tool = payload.get("tool", "")
     arguments = payload.get("arguments", {})
+    logger.info("req=%s client=%s tool=%r arguments=%r", req_id, client_ip, tool, arguments)
 
     if tool == "read_file":
-        return JSONResponse(read_file_tool(arguments.get("path", "")))
+        result = read_file_tool(arguments.get("path", ""))
+    elif tool == "fetch_url":
+        result = fetch_url_tool(arguments.get("url", ""))
+    else:
+        result = {"action": "block", "reason": "unknown tool", "result": None}
 
-    if tool == "fetch_url":
-        return JSONResponse(fetch_url_tool(arguments.get("url", "")))
+    elapsed_ms = (time.monotonic() - t0) * 1000
+    action = result.get("action")
+    reason = result.get("reason")
+    log_fn = logger.error if action == "allow" else logger.info
+    log_fn(
+        "req=%s client=%s tool=%r DECISION action=%r reason=%r elapsed_ms=%.1f",
+        req_id, client_ip, tool, action, reason, elapsed_ms,
+    )
 
-    return JSONResponse({"action": "block", "reason": "unknown tool", "result": None})
+    return JSONResponse(result)
