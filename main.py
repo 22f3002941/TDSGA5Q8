@@ -1,11 +1,12 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from urllib.parse import urlparse, urljoin
+from urllib.parse import urlparse, urljoin, unquote
 from pathlib import Path
 import collections
 import contextlib
 import json
 import logging
+import re
 import socket
 import sys
 import time
@@ -218,6 +219,74 @@ def resolve_safe_ip(hostname: str):
     return True, first_ip
 
 
+_IPV4_RE = re.compile(
+    r'(?<!\d)(?:(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d\d|[1-9]?\d)(?!\d)'
+)
+_EMBEDDED_SCHEME_RE = re.compile(r'https?://([^/\?\#:]+)', re.IGNORECASE)
+
+
+def _fully_unquote(s: str, max_passes: int = 4) -> str:
+    """Repeatedly percent-decode to defeat double/triple encoding."""
+    prev = s
+    for _ in range(max_passes):
+        cur = unquote(prev)
+        if cur == prev:
+            break
+        prev = cur
+    return prev
+
+
+def _ip_is_unsafe(ip) -> bool:
+    return (
+        ip.is_private or ip.is_loopback or ip.is_link_local
+        or ip.is_multicast or ip.is_reserved or ip.is_unspecified
+    )
+
+
+def find_embedded_unsafe_target(raw_url: str):
+    """
+    Defense in depth beyond host allowlisting: scan the FULL url (path,
+    query, fragment), fully percent-decoded, for any embedded reference to
+    a private/loopback/link-local/reserved address -- whether that's a
+    bare IP literal sitting in a query value (?next=169.254.169.254) or a
+    nested http(s):// URL pointing at one (?next=http%3A%2F%2F127.0.0.1%2Fadmin).
+
+    The outer host being allowlisted doesn't make a payload riding along
+    with it safe to hand back: something downstream of this guardrail --
+    an open redirect on the real site, a browser rendering the response,
+    or an agent that reads the fetched content and decides to act on a
+    URL it finds in there -- may follow that embedded reference even
+    though we never do. Returns None if nothing suspicious found,
+    otherwise a short block reason.
+    """
+    decoded = _fully_unquote(raw_url)
+
+    for ip_str in _IPV4_RE.findall(decoded):
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if _ip_is_unsafe(ip):
+            return f"embedded unsafe ip in url: {ip_str}"
+
+    for host in _EMBEDDED_SCHEME_RE.findall(decoded):
+        host = host.lower()
+        try:
+            ip = ipaddress.ip_address(host)
+            if _ip_is_unsafe(ip):
+                return f"embedded unsafe ip in url: {host}"
+            continue
+        except ValueError:
+            pass
+        if host in ALLOWED_HOSTS:
+            continue
+        ok, _ip = resolve_safe_ip(host)
+        if not ok:
+            return f"embedded unsafe host in url: {host}"
+
+    return None
+
+
 def url_is_safe(raw_url: str):
     """
     Returns (ok, reason, ip). ip is the single resolved+validated address
@@ -268,6 +337,10 @@ def url_is_safe(raw_url: str):
         return False, "ip literal not allowed", None
     except ValueError:
         pass
+
+    embedded_issue = find_embedded_unsafe_target(raw_url)
+    if embedded_issue:
+        return False, embedded_issue, None
 
     ok, ip_or_reason = resolve_safe_ip(hostname)
     if not ok:
