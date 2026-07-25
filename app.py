@@ -24,7 +24,7 @@ def is_within_sandbox(user_path: str):
     try:
         candidate = normalize_candidate(user_path)
         candidate.relative_to(SANDBOX_ROOT)
-        return True, str(candidate)
+        return True, candidate
     except Exception:
         return False, None
 
@@ -106,12 +106,7 @@ def fetch_url_tool(url: str):
         return {"action": "block", "reason": reason, "result": None}
 
     try:
-        resp = requests.get(
-            url,
-            timeout=10,
-            allow_redirects=False,
-            headers={"User-Agent": "guardrail/1.0"},
-        )
+        resp = requests.get(url, timeout=10, allow_redirects=False, headers={"User-Agent": "guardrail/1.0"})
     except Exception:
         return {"action": "block", "reason": "request failed", "result": None}
 
@@ -129,12 +124,7 @@ def fetch_url_tool(url: str):
             return {"action": "block", "reason": "redirect blocked", "result": None}
 
         try:
-            resp = requests.get(
-                location,
-                timeout=10,
-                allow_redirects=False,
-                headers={"User-Agent": "guardrail/1.0"},
-            )
+            resp = requests.get(location, timeout=10, allow_redirects=False, headers={"User-Agent": "guardrail/1.0"})
         except Exception:
             return {"action": "block", "reason": "redirect request failed", "result": None}
 
