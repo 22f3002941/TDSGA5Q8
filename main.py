@@ -163,6 +163,28 @@ def url_is_safe(raw_url: str):
     if not parsed.netloc:
         return False, "missing host"
 
+    if parsed.port is not None:
+    return False, "port not allowed"
+
+    if parsed.fragment:
+        return False, "fragment not allowed"
+
+    if not parsed.netloc:
+    return False, "missing host"
+
+    try:
+        ipaddress.ip_address(parsed.hostname)
+        return False, "ip literal not allowed"
+    except ValueError:
+        pass
+
+    hostname = parsed.hostname.lower().rstrip(".")
+    if hostname not in ALLOWED_HOSTS:
+        return False, "host not allowlisted"
+
+    if "@" in parsed.netloc:
+        return False, "userinfo not allowed"
+
     if parsed.username or parsed.password:
         return False, "userinfo not allowed"
 
