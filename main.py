@@ -157,19 +157,37 @@ def url_is_safe(raw_url: str):
     except Exception:
         return False, "bad url"
 
-    if parsed.scheme not in ALLOWED_SCHEMES:
+    if parsed.scheme not in {"http", "https"}:
         return False, "bad scheme"
 
-    if not parsed.hostname:
+    if not parsed.netloc:
         return False, "missing host"
 
     if parsed.username or parsed.password:
         return False, "userinfo not allowed"
 
-    if not host_is_exactly_allowed(parsed.hostname):
+    hostname = parsed.hostname
+    if hostname is None:
+        return False, "missing host"
+
+    hostname = hostname.lower().rstrip(".")
+
+    try:
+        ipaddress.ip_address(hostname)
+        return False, "ip literal not allowed"
+    except ValueError:
+        pass
+
+    if hostname not in ALLOWED_HOSTS:
         return False, "host not allowlisted"
 
-    if not host_resolves_to_safe_ip(parsed.hostname):
+    if parsed.port is not None:
+        if parsed.scheme == "http" and parsed.port != 80:
+            return False, "bad port"
+        if parsed.scheme == "https" and parsed.port != 443:
+            return False, "bad port"
+
+    if not host_resolves_to_safe_ip(hostname):
         return False, "unsafe ip"
 
     return True, "safe url"
