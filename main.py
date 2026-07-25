@@ -417,7 +417,7 @@ def fetch_url_tool(url: str, max_redirects: int = 5):
             current_url = next_url
             continue
 
-        return {"action": "allow", "reason": "safe allowlisted url", "result": {"text": resp.text}}
+        return {"action": "allow", "reason": "safe allowlisted url", "result": {"content": resp.text}}
 
     return {"action": "block", "reason": "too many redirects", "result": None}
 
@@ -436,7 +436,7 @@ async def guardrail(request: Request):
         req_id, client_ip, raw_text[:2000],
     )
 
-    def record(tool, arguments, action, reason, elapsed_ms, parse_error=None):
+    def record(tool, arguments, action, reason, elapsed_ms, parse_error=None, result_payload=None):
         _RECENT_REQUESTS.appendleft({
             "req_id": req_id,
             "timestamp": ts,
@@ -448,6 +448,7 @@ async def guardrail(request: Request):
             "reason": reason,
             "elapsed_ms": round(elapsed_ms, 2),
             "parse_error": parse_error,
+            "result": result_payload,
         })
 
     try:
@@ -486,7 +487,18 @@ async def guardrail(request: Request):
         "req=%s client=%s tool=%r DECISION action=%r reason=%r elapsed_ms=%.1f",
         req_id, client_ip, tool, action, reason, elapsed_ms,
     )
-    record(tool, arguments, action, reason, elapsed_ms)
+
+    # Truncate for the buffer -- fetched page text can be large, and we
+    # only need enough to eyeball whether shape/content look right.
+    inner = result.get("result")
+    if isinstance(inner, dict):
+        truncated_inner = {
+            k: (v[:500] if isinstance(v, str) else v)
+            for k, v in inner.items()
+        }
+    else:
+        truncated_inner = inner
+    record(tool, arguments, action, reason, elapsed_ms, result_payload=truncated_inner)
 
     return JSONResponse(result)
 
