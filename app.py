@@ -1,9 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 from urllib.parse import urlparse
 from pathlib import Path
-import os
 import socket
 import ipaddress
 import requests
@@ -15,55 +13,30 @@ ALLOWED_HOSTS = {"example.com", "www.iana.org"}
 ALLOWED_SCHEMES = {"http", "https"}
 
 
-class ToolRequest(BaseModel):
-    tool: str
-    arguments: dict
-
-
-def is_within_sandbox(user_path: str) -> tuple[bool, str | None]:
+def is_within_sandbox(user_path: str):
     try:
         candidate = (SANDBOX_ROOT / user_path).resolve()
-    except Exception:
-        return False, None
-
-    try:
         candidate.relative_to(SANDBOX_ROOT)
         return True, str(candidate)
-    except ValueError:
+    except Exception:
         return False, None
 
 
 def read_file_tool(path: str):
     ok, final_path = is_within_sandbox(path)
     if not ok:
-        return {
-            "action": "block",
-            "reason": "path escapes sandbox",
-            "result": None,
-        }
+        return {"action": "block", "reason": "path escapes sandbox", "result": None}
 
     p = Path(final_path)
     if not p.exists() or not p.is_file():
-        return {
-            "action": "block",
-            "reason": "file missing or not a regular file",
-            "result": None,
-        }
+        return {"action": "block", "reason": "file missing", "result": None}
 
     try:
         content = p.read_text(encoding="utf-8", errors="replace")
-    except Exception as e:
-        return {
-            "action": "block",
-            "reason": "failed to read file",
-            "result": None,
-        }
+    except Exception:
+        return {"action": "block", "reason": "read failed", "result": None}
 
-    return {
-        "action": "allow",
-        "reason": "safe sandbox file",
-        "result": {"content": content},
-    }
+    return {"action": "allow", "reason": "safe sandbox file", "result": {"content": content}}
 
 
 def host_is_exactly_allowed(hostname: str) -> bool:
@@ -83,20 +56,13 @@ def host_resolves_to_safe_ip(hostname: str) -> bool:
         except ValueError:
             return False
 
-        if (
-            ip.is_private
-            or ip.is_loopback
-            or ip.is_link_local
-            or ip.is_multicast
-            or ip.is_reserved
-            or ip.is_unspecified
-        ):
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
             return False
 
     return True
 
 
-def url_is_safe(raw_url: str) -> tuple[bool, str]:
+def url_is_safe(raw_url: str):
     try:
         parsed = urlparse(raw_url)
     except Exception:
@@ -115,7 +81,7 @@ def url_is_safe(raw_url: str) -> tuple[bool, str]:
         return False, "host not allowlisted"
 
     if not host_resolves_to_safe_ip(parsed.hostname):
-        return False, "host resolves to unsafe ip"
+        return False, "unsafe ip"
 
     return True, "safe url"
 
@@ -123,72 +89,44 @@ def url_is_safe(raw_url: str) -> tuple[bool, str]:
 def fetch_url_tool(url: str):
     ok, reason = url_is_safe(url)
     if not ok:
-        return {
-            "action": "block",
-            "reason": reason,
-            "result": None,
-        }
+        return {"action": "block", "reason": reason, "result": None}
 
     try:
         resp = requests.get(url, timeout=10, allow_redirects=False, headers={"User-Agent": "guardrail/1.0"})
     except Exception:
-        return {
-            "action": "block",
-            "reason": "request failed",
-            "result": None,
-        }
+        return {"action": "block", "reason": "request failed", "result": None}
 
     if 300 <= resp.status_code < 400:
-        loc = resp.headers.get("Location", "")
-        if loc:
-            next_url = loc
-            if loc.startswith("/"):
-                parsed = urlparse(url)
-                next_url = f"{parsed.scheme}://{parsed.hostname}{loc}"
-            ok2, reason2 = url_is_safe(next_url)
-            if not ok2:
-                return {
-                    "action": "block",
-                    "reason": "redirect blocked",
-                    "result": None,
-                }
-            try:
-                resp = requests.get(next_url, timeout=10, allow_redirects=False, headers={"User-Agent": "guardrail/1.0"})
-            except Exception:
-                return {
-                    "action": "block",
-                    "reason": "redirect request failed",
-                    "result": None,
-                }
-        else:
-            return {
-                "action": "block",
-                "reason": "redirect without location",
-                "result": None,
-            }
+        location = resp.headers.get("Location")
+        if not location:
+            return {"action": "block", "reason": "redirect without location", "result": None}
 
-    body = resp.text
-    return {
-        "action": "allow",
-        "reason": "safe allowlisted url",
-        "result": {"text": body},
-    }
+        if location.startswith("/"):
+            parsed = urlparse(url)
+            location = f"{parsed.scheme}://{parsed.hostname}{location}"
+
+        ok2, reason2 = url_is_safe(location)
+        if not ok2:
+            return {"action": "block", "reason": "redirect blocked", "result": None}
+
+        try:
+            resp = requests.get(location, timeout=10, allow_redirects=False, headers={"User-Agent": "guardrail/1.0"})
+        except Exception:
+            return {"action": "block", "reason": "redirect request failed", "result": None}
+
+    return {"action": "allow", "reason": "safe allowlisted url", "result": {"text": resp.text}}
 
 
 @app.post("/")
-async def guardrail(req: ToolRequest):
-    if req.tool == "read_file":
-        path = req.arguments.get("path", "")
-        return JSONResponse(read_file_tool(path))
+async def guardrail(request: Request):
+    payload = await request.json()
+    tool = payload.get("tool", "")
+    arguments = payload.get("arguments", {})
 
-    if req.tool == "fetch_url":
-        url = req.arguments.get("url", "")
-        return JSONResponse(fetch_url_tool(url))
+    if tool == "read_file":
+        return JSONResponse(read_file_tool(arguments.get("path", "")))
 
-    return JSONResponse(
-        {
-            "action": "block",
-            "reason": "unknown tool",
-            "result": None,
-        }
-    )
+    if tool == "fetch_url":
+        return JSONResponse(fetch_url_tool(arguments.get("url", "")))
+
+    return JSONResponse({"action": "block", "reason": "unknown tool", "result": None})
