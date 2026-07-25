@@ -127,7 +127,12 @@ def host_is_exactly_allowed(hostname: str) -> bool:
 
 def host_resolves_to_safe_ip(hostname: str) -> bool:
     try:
-        infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+        socket.getaddrinfo(
+            hostname,
+            443 if hostname == "www.iana.org" else 80,
+            family=socket.AF_UNSPEC,
+            type=socket.SOCK_STREAM,
+        )
     except Exception:
         return False
 
@@ -151,41 +156,28 @@ def host_resolves_to_safe_ip(hostname: str) -> bool:
     return True
 
 
+from urllib.parse import urlparse
+import ipaddress
+
 def url_is_safe(raw_url: str):
+    if not isinstance(raw_url, str):
+        return False, "bad url"
+
+    if "\\" in raw_url:
+        return False, "bad url"
+
     try:
         parsed = urlparse(raw_url)
     except Exception:
         return False, "bad url"
 
-    if parsed.scheme not in {"http", "https"}:
+    if parsed.scheme not in ("http", "https"):
         return False, "bad scheme"
 
     if not parsed.netloc:
         return False, "missing host"
 
-    if parsed.port is not None:
-        return False, "port not allowed"
-
-    if parsed.fragment:
-        return False, "fragment not allowed"
-
-    if not parsed.netloc:
-        return False, "missing host"
-
-    try:
-        ipaddress.ip_address(parsed.hostname)
-        return False, "ip literal not allowed"
-    except ValueError:
-        pass
-
-    hostname = parsed.hostname.lower().rstrip(".")
-    if hostname not in ALLOWED_HOSTS:
-        return False, "host not allowlisted"
-
-    if "@" in parsed.netloc:
-        return False, "userinfo not allowed"
-
-    if parsed.username or parsed.password:
+    if parsed.username is not None or parsed.password is not None:
         return False, "userinfo not allowed"
 
     hostname = parsed.hostname
@@ -193,12 +185,6 @@ def url_is_safe(raw_url: str):
         return False, "missing host"
 
     hostname = hostname.lower().rstrip(".")
-
-    try:
-        ipaddress.ip_address(hostname)
-        return False, "ip literal not allowed"
-    except ValueError:
-        pass
 
     if hostname not in ALLOWED_HOSTS:
         return False, "host not allowlisted"
@@ -208,6 +194,15 @@ def url_is_safe(raw_url: str):
             return False, "bad port"
         if parsed.scheme == "https" and parsed.port != 443:
             return False, "bad port"
+
+    try:
+        ipaddress.ip_address(hostname)
+        return False, "ip literal not allowed"
+    except ValueError:
+        pass
+
+    if parsed.fragment:
+        return False, "fragment not allowed"
 
     if not host_resolves_to_safe_ip(hostname):
         return False, "unsafe ip"
@@ -243,8 +238,17 @@ def fetch_url_tool(url: str, max_redirects: int = 5):
             # urljoin correctly resolves relative paths, protocol-relative
             # ("//host/path"), and absolute redirect targets per RFC 3986,
             # unlike manual string concatenation.
-            current_url = urljoin(current_url, location)
-            continue
+            next_url = urljoin(current_url, location)
+
+            ok, reason = url_is_safe(next_url)
+            if not ok:
+                return {
+                    "action": "block",
+                    "reason": reason,
+                    "result": None,
+                }
+
+            current_url = next_url
 
         return {"action": "allow", "reason": "safe allowlisted url", "result": {"text": resp.text}}
 
