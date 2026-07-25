@@ -164,13 +164,13 @@ def url_is_safe(raw_url: str):
         return False, "missing host"
 
     if parsed.port is not None:
-    return False, "port not allowed"
+        return False, "port not allowed"
 
     if parsed.fragment:
         return False, "fragment not allowed"
 
     if not parsed.netloc:
-    return False, "missing host"
+        return False, "missing host"
 
     try:
         ipaddress.ip_address(parsed.hostname)
