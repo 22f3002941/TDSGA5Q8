@@ -45,14 +45,35 @@ ensure_seed_files()
 
 @app.get("/debug")
 async def debug():
+    def is_in_sandbox(path: Path) -> bool:
+        try:
+            path.relative_to(SANDBOX_ROOT)
+            return True
+        except ValueError:
+            return False
+
     def describe(path: Path):
         info = {"path": str(path), "exists": path.exists()}
         if path.exists():
             try:
                 info["is_file"] = path.is_file()
-                info["content"] = path.read_text(encoding="utf-8", errors="replace") if path.is_file() else None
             except Exception as exc:
                 info["read_error"] = f"{type(exc).__name__}: {exc}"
+                return info
+
+            # This endpoint is diagnostic-only and unauthenticated. It must
+            # never echo file *content* for anything outside SANDBOX_ROOT --
+            # doing so hands out data (like the OUTSIDE_ROOT canary) through
+            # a path that bypasses read_file_tool's containment checks
+            # entirely. Existence/is_file are harmless to report; content
+            # is not, for anything the sandbox is supposed to be hiding.
+            if info["is_file"] and is_in_sandbox(path):
+                try:
+                    info["content"] = path.read_text(encoding="utf-8", errors="replace")
+                except Exception as exc:
+                    info["read_error"] = f"{type(exc).__name__}: {exc}"
+            else:
+                info["content"] = None
         return info
 
     return JSONResponse({
