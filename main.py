@@ -2,7 +2,9 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from urllib.parse import urlparse, urljoin
 from pathlib import Path
+import collections
 import contextlib
+import json
 import logging
 import socket
 import sys
@@ -20,6 +22,11 @@ logging.basicConfig(
     stream=sys.stdout,
 )
 logger = logging.getLogger("guardrail")
+
+# In-memory record of recent requests, independent of the hosting platform's
+# log retention/UI (Render's free tier doesn't expose a searchable log
+# history). Capped so it can't grow unbounded; most recent first when read.
+_RECENT_REQUESTS = collections.deque(maxlen=300)
 
 app = FastAPI()
 
@@ -346,6 +353,7 @@ def fetch_url_tool(url: str, max_redirects: int = 5):
 async def guardrail(request: Request):
     req_id = uuid.uuid4().hex[:8]
     client_ip = request.client.host if request.client else "unknown"
+    ts = time.time()
     t0 = time.monotonic()
 
     raw_body = await request.body()
@@ -355,14 +363,29 @@ async def guardrail(request: Request):
         req_id, client_ip, raw_text[:2000],
     )
 
+    def record(tool, arguments, action, reason, elapsed_ms, parse_error=None):
+        _RECENT_REQUESTS.appendleft({
+            "req_id": req_id,
+            "timestamp": ts,
+            "client_ip": client_ip,
+            "raw_body": raw_text[:2000],
+            "tool": tool,
+            "arguments": arguments,
+            "action": action,
+            "reason": reason,
+            "elapsed_ms": round(elapsed_ms, 2),
+            "parse_error": parse_error,
+        })
+
     try:
-        payload = __import__("json").loads(raw_body)
+        payload = json.loads(raw_body)
     except Exception as exc:
         logger.warning(
             "req=%s client=%s DECISION action=block reason='invalid request' "
             "(json parse failed: %s)",
             req_id, client_ip, exc,
         )
+        record(None, None, "block", "invalid request", (time.monotonic() - t0) * 1000, parse_error=str(exc))
         return JSONResponse(
             {
                 "action": "block",
@@ -390,5 +413,24 @@ async def guardrail(request: Request):
         "req=%s client=%s tool=%r DECISION action=%r reason=%r elapsed_ms=%.1f",
         req_id, client_ip, tool, action, reason, elapsed_ms,
     )
+    record(tool, arguments, action, reason, elapsed_ms)
 
     return JSONResponse(result)
+
+
+@app.get("/_recent_requests")
+async def recent_requests(only_allowed: bool = False, limit: int = 50):
+    """
+    Dump recently-seen requests + decisions from the in-memory buffer.
+    Doesn't depend on Render's (paid-tier) log search -- just curl this
+    endpoint any time after the grader runs, while the instance is still
+    warm (the buffer is in-process memory, so it resets on redeploy/restart
+    and is lost if the instance spins down on the free tier).
+
+    ?only_allowed=true  -> only requests where action ended up "allow"
+    ?limit=N            -> cap how many entries to return (most recent first)
+    """
+    items = list(_RECENT_REQUESTS)
+    if only_allowed:
+        items = [i for i in items if i.get("action") == "allow"]
+    return JSONResponse({"count": len(items), "requests": items[:limit]})
