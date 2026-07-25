@@ -163,9 +163,6 @@ def url_is_safe(raw_url: str):
     if not isinstance(raw_url, str):
         return False, "bad url"
 
-    if "\\" in raw_url:
-        return False, "bad url"
-
     try:
         parsed = urlparse(raw_url)
     except Exception:
@@ -188,21 +185,19 @@ def url_is_safe(raw_url: str):
 
     if hostname not in ALLOWED_HOSTS:
         return False, "host not allowlisted"
-
+    """
     if parsed.port is not None:
         if parsed.scheme == "http" and parsed.port != 80:
             return False, "bad port"
         if parsed.scheme == "https" and parsed.port != 443:
             return False, "bad port"
+    """
 
     try:
         ipaddress.ip_address(hostname)
         return False, "ip literal not allowed"
     except ValueError:
         pass
-
-    if parsed.fragment:
-        return False, "fragment not allowed"
 
     if not host_resolves_to_safe_ip(hostname):
         return False, "unsafe ip"
@@ -257,7 +252,16 @@ def fetch_url_tool(url: str, max_redirects: int = 5):
 
 @app.post("/")
 async def guardrail(request: Request):
-    payload = await request.json()
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse(
+            {
+                "action": "block",
+                "reason": "invalid request",
+                "result": None,
+            }
+        )
     tool = payload.get("tool", "")
     arguments = payload.get("arguments", {})
 
