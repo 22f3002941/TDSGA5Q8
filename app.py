@@ -16,7 +16,14 @@ ALLOWED_SCHEMES = {"http", "https"}
 def normalize_candidate(user_path: str) -> Path:
     p = Path(user_path)
     if p.is_absolute():
-        return p.resolve()
+        # A leading "/" should mean "relative to the sandbox root",
+        # not the real filesystem root. Strip the leading slash and
+        # join the remaining components onto SANDBOX_ROOT instead of
+        # resolving against the OS root.
+        if len(p.parts) > 1:
+            p = Path(*p.parts[1:])
+        else:
+            p = Path(".")
     return (SANDBOX_ROOT / p).resolve()
 
 
