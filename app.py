@@ -13,27 +13,39 @@ ALLOWED_HOSTS = {"example.com", "www.iana.org"}
 ALLOWED_SCHEMES = {"http", "https"}
 
 
-def normalize_candidate(user_path: str) -> Path:
+def normalize_candidates(user_path: str):
+    """
+    An absolute-looking path could mean two different things to a benign
+    caller:
+      1. The real, full path on disk (e.g. the exact SANDBOX_ROOT-prefixed
+         path given in the task spec).
+      2. A path relative to the sandbox root, using "/" as a stand-in for
+         the sandbox root itself (e.g. "/notes/report.txt").
+    We try both interpretations and accept whichever one lands inside the
+    sandbox. This never weakens containment: relative_to(SANDBOX_ROOT) is
+    still enforced on every candidate, so nothing outside the sandbox is
+    ever accepted, no matter which interpretation is used.
+    """
     p = Path(user_path)
+    candidates = []
     if p.is_absolute():
-        # A leading "/" should mean "relative to the sandbox root",
-        # not the real filesystem root. Strip the leading slash and
-        # join the remaining components onto SANDBOX_ROOT instead of
-        # resolving against the OS root.
-        if len(p.parts) > 1:
-            p = Path(*p.parts[1:])
-        else:
-            p = Path(".")
-    return (SANDBOX_ROOT / p).resolve()
+        candidates.append(p.resolve())
+        rel_parts = p.parts[1:] if len(p.parts) > 1 else ()
+        rel = Path(*rel_parts) if rel_parts else Path(".")
+        candidates.append((SANDBOX_ROOT / rel).resolve())
+    else:
+        candidates.append((SANDBOX_ROOT / p).resolve())
+    return candidates
 
 
 def is_within_sandbox(user_path: str):
-    try:
-        candidate = normalize_candidate(user_path)
-        candidate.relative_to(SANDBOX_ROOT)
-        return True, candidate
-    except Exception:
-        return False, None
+    for candidate in normalize_candidates(user_path):
+        try:
+            candidate.relative_to(SANDBOX_ROOT)
+            return True, candidate
+        except Exception:
+            continue
+    return False, None
 
 
 def read_file_tool(path: str):
