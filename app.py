@@ -13,9 +13,16 @@ ALLOWED_HOSTS = {"example.com", "www.iana.org"}
 ALLOWED_SCHEMES = {"http", "https"}
 
 
+def normalize_candidate(user_path: str) -> Path:
+    p = Path(user_path)
+    if p.is_absolute():
+        return p.resolve()
+    return (SANDBOX_ROOT / p).resolve()
+
+
 def is_within_sandbox(user_path: str):
     try:
-        candidate = (SANDBOX_ROOT / user_path).resolve()
+        candidate = normalize_candidate(user_path)
         candidate.relative_to(SANDBOX_ROOT)
         return True, str(candidate)
     except Exception:
@@ -56,7 +63,14 @@ def host_resolves_to_safe_ip(hostname: str) -> bool:
         except ValueError:
             return False
 
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_reserved or ip.is_unspecified:
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_multicast
+            or ip.is_reserved
+            or ip.is_unspecified
+        ):
             return False
 
     return True
@@ -92,7 +106,12 @@ def fetch_url_tool(url: str):
         return {"action": "block", "reason": reason, "result": None}
 
     try:
-        resp = requests.get(url, timeout=10, allow_redirects=False, headers={"User-Agent": "guardrail/1.0"})
+        resp = requests.get(
+            url,
+            timeout=10,
+            allow_redirects=False,
+            headers={"User-Agent": "guardrail/1.0"},
+        )
     except Exception:
         return {"action": "block", "reason": "request failed", "result": None}
 
@@ -110,7 +129,12 @@ def fetch_url_tool(url: str):
             return {"action": "block", "reason": "redirect blocked", "result": None}
 
         try:
-            resp = requests.get(location, timeout=10, allow_redirects=False, headers={"User-Agent": "guardrail/1.0"})
+            resp = requests.get(
+                location,
+                timeout=10,
+                allow_redirects=False,
+                headers={"User-Agent": "guardrail/1.0"},
+            )
         except Exception:
             return {"action": "block", "reason": "redirect request failed", "result": None}
 
