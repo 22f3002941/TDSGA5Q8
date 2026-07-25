@@ -182,7 +182,7 @@ def url_is_safe(raw_url: str):
     if hostname is None:
         return False, "missing host"
 
-    hostname = hostname.lower().rstrip(".")
+    hostname = hostname.lower()
 
     if hostname not in ALLOWED_HOSTS:
         return False, "host not allowlisted"
