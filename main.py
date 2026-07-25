@@ -127,9 +127,9 @@ def host_is_exactly_allowed(hostname: str) -> bool:
 
 def host_resolves_to_safe_ip(hostname: str) -> bool:
     try:
-        socket.getaddrinfo(
+        infos = socket.getaddrinfo(
             hostname,
-            443 if hostname == "www.iana.org" else 80,
+            None,
             family=socket.AF_UNSPEC,
             type=socket.SOCK_STREAM,
         )
@@ -138,6 +138,7 @@ def host_resolves_to_safe_ip(hostname: str) -> bool:
 
     for info in infos:
         ip_str = info[4][0]
+
         try:
             ip = ipaddress.ip_address(ip_str)
         except ValueError:
